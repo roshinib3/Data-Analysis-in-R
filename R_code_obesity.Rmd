@@ -1,0 +1,586 @@
+---
+title: "Is Computer Use Associated with BMI?"
+subtitle: A Statistical Analysis
+author: "Roshini Balasubramanian"
+references:
+- author: 
+  - family: Vandewater
+    given: Elizabeth A
+  id: vandewater2006time
+  issued:
+    year: 2006
+  publisher: Pediatrics
+  title: 'Time well spent? Relating television use to childrens free-time activities.'
+  type: article-journal
+
+- author: 
+  - family: Robinson
+    given: Thomas N
+  id: robinson
+  issued:
+    year: 2017
+  publisher: Pediatrics
+  title: 'Screen Media Exposure and Obesity in Children and Adolescents'
+  type: article-journal
+  
+- author: 
+  - family: Center for Disease Control and Prevention
+  id: cdc
+  issued:
+    year: 2020
+  title: 'Adult Obesity Facts'
+  type: article
+  
+- author: 
+  - family: Calvert
+    given: Sandra L.
+  id: calvert2013electronic
+  issued:
+    year: 2002
+  publisher: New Dir Child Adolesc Dev.
+  title: 'Electronic Gaming and the Obesity Crisis'
+  type: article-journal
+  
+- author: 
+  - family: Hlavac
+    given: Marek
+  id: star
+  issued:
+    year: 2018
+  publisher: R package version 5.2.2
+  title: 'Stargazer: Well-formatted regression and summary statistics tables'
+  type: article-journal
+
+
+- author: 
+  - family: Honaker
+    given: James
+  - family: King
+    given: Gary
+  - family: Blackwell
+    given: Matthew
+  id: amelia
+  issued:
+    year: 2011
+  publisher: Journal of Statistical Software
+  title: 'Amelia: A Program for Missing Data'
+  type: article-journal
+  
+  
+- author: 
+  - family: American Heart Association
+  id: aha
+  year: 2014
+  title: 'Body Mass Index (BMI) In Adults'
+  type: article
+  
+
+- author: 
+  - family: Harris
+    given: Kathleen Mullan
+  - author: 
+    family: Udry
+    given: Richard J
+  id: harris2018national
+  issued:
+    year: 2018
+  page: 08-06
+  publisher: 'Ann Arbor, MI: Carolina Population Center, University of North Carolina-Chapel
+    Hill [distributor], Inter-university Consortium for Political and Social Research
+    [distributor]'
+  title: National longitudinal study of adolescent to adult health (add health), 1994-2008
+    [Public Use]
+  type: article-journal
+  
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+---
+nocite: | 
+  @star, @amelia
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+```{r load_packages, include = FALSE}
+library(stargazer)
+library(tidyverse)
+library(arsenal)
+library(sjPlot)
+library(xtable)
+library(Amelia)
+library(MatchIt)
+library(cobalt)
+library(dataMaid)
+library(naniar)
+```
+
+```{r load and merge data, include = FALSE}
+temp <- load("21600-0022-Data.rda")
+outcome <- da21600.0022
+
+temp2 <- load("21600-0001-Data.rda")
+demog <- da21600.0001
+
+health <- merge(outcome, demog, by.x="AID", by.y="AID")
+```
+
+```{r select columns, echo = FALSE, include = FALSE, warning = FALSE}
+# H1GI1Y -- birth year
+# BIO_SEX -- biological sex
+#H1GI4 -- hispanic; H1GI6A -- white; H1GI6B -- black; H1GI6D -- asian
+# PA55 -- household income
+# H4DA23 -- hours spent on computer for videos or computer games
+# H4GH8 -- frequency eat fast food
+# H4BMI -- Body Mass Index
+
+health1 <- health %>% select(., H1GI1Y, BIO_SEX, H1GI4, H1GI6A, H1GI6B, H1GI6D, PA55, H4GH8, H4DA23, H4BMI)
+```
+
+```{r rename columns, echo = FALSE, include = FALSE, warning = FALSE}
+df <- health1 %>% rename(
+  birthyear = H1GI1Y,
+  female = BIO_SEX,
+  hispanic = H1GI4,
+  white = H1GI6A,
+  black = H1GI6B, 
+  asian = H1GI6D,
+  income = PA55,
+  fastfood = H4GH8,
+  user = H4DA23,
+  BMI = H4BMI
+)
+```
+
+```{r clean variables, echo = FALSE, include = FALSE, warning = FALSE}
+df <- df %>% 
+  mutate(
+    # binary
+    female = case_when(female == "(2) (2) Female" ~ 1, female == "(1) (1) Male" ~ 0),
+    hispanic = case_when(hispanic == "(1) (1) Yes" ~ 1, hispanic == "(0) (0) No" ~ 0),
+    white = case_when(white == "(1) (1) Marked" ~ 1, white == "(0) (0) Not marked" ~ 0),
+    asian = case_when(
+      asian == "(1) (1) Marked (If Asian/Pacific Islander among R's answer ask Q" ~ 1, 
+      asian == "(0) (0) Not marked (skip to Q.8)" ~ 0),
+    black = case_when(black == "(1) (1) Marked" ~ 1, black == "(0) (0) Not marked" ~ 0),
+    user = case_when(user == 0 ~ 0, user !=0 ~ 1)
+  )
+
+df <- separate(df, birthyear, c("na", "na2", "na3", "birthyear"))
+df <- df %>% select(birthyear, female, hispanic, white, black, asian, income, fastfood, user, BMI)
+df$birthyear <- as.numeric(df$birthyear)
+
+indices <- which(df$BMI == 889 | df$BMI == 888)
+df$BMI[indices] <- NA
+```
+
+```{r imputation, echo = FALSE, include = FALSE, warning = FALSE}
+set.seed(12345)
+df <- data.frame(df)
+
+bounds_matrix <- matrix(    # tell amelia to bound some vars
+    ncol  = 3,              # 1st col = variable #, 2nd = min, 3rd = max
+    byrow = TRUE,
+    data  = c(1, 1974, 1983, # birthyear
+              2, 0, 1,   # female
+              3, 0, 1,   # hispanic
+              4, 0, 1,   # white
+              5, 0, 1,   # black
+              6, 0, 1,   # asian
+              7, 0, 999, # income
+              8, 0, 99,  # fastfood
+              9, 0, 1,  # user
+              10, 14.40, 70.30 # BMI
+            )
+)
+
+imp <- amelia(
+  x = df,                
+  m = 1,                          
+  noms = c("female", "hispanic", "white", "black", "asian"),
+  ords = c("income", "birthyear", "fastfood", "user"),
+  bounds = bounds_matrix  
+  )
+
+imp <- imp$imputations$imp1
+```
+
+```{r matching, echo = FALSE, include = FALSE, warning = FALSE}
+set.seed(12345)
+imputed_data_matched <- matchit(
+  formula = user ~ birthyear + female + hispanic + white + black + asian + income + fastfood,
+  data    = imp,
+  method  = "nearest",
+  caliper = 0.03
+)
+
+# cobalt::love.plot(imputed_data_matched, title = "Covariate Balance Unmatched vs. Matched")
+
+
+
+health_matched <- MatchIt::match.data(imputed_data_matched)
+
+# saveRDS(health_matched, file="data_health_matched")
+# library(dataMaid)
+# dataMaid::makeCodebook(health_matched, reportTitle = 'Codebook for Matched Data')
+```
+
+
+## 1 Introduction
+The CDC found that by 2018, over 40% of Americans were obese, a number that has increased by over 10% in the past two decades [@cdc]. Obesity is related to a variety of health conditions, increased medical costs, and decreased wellness. It is a condition that is recognized to disproportionately affect people based on age, race, and socioeconomic status. The emerging public health crisis caused by increasing pediatric obesity has often been tied to youth consumption of media, but others believe factors like diet are the main cause of rising rates. Accordingly, this study aims to investigate the question, **does spending time on the computer playing games or watching videos increase BMI?**
+
+
+## 2 Theory
+Research regarding the effect of media on obesity rates has been generally inconsistent. Many studies analyzing the relationship between the time children spend watching television and pursuing other activities found that increased screen media consumption had to little to no correlation with the time children spend on high-energy, outdoor activities [@vandewater2006time]. It mostly displaced indoor activities and negatively correlated with time spent with family and friends. However, there are factors about increased media that could be contributing to the growing obesity rate. For instance, one theory suggests that increased snacking while watching videos or television and the large amount of food and beverage marketing advertisements could be affecting the diet of those who engage with media, especially for content unrelated to work or school, and thus contribute to obesity [@calvert2013electronic]. Other factors, like duration of sleep, are related to obesity as well, and there are studies that show screen time negatively affects sleep habits while others show that there is limited impact [@robinson]. Finally, some studies believe that screen media could have a positive impact on the lives of some individuals, giving them access to interactive ways to improve diet and physical activity [@robinson]. Overall, while there is general consensus that time spent consuming screen media and obesity rates have both been on the rise, particularly among American youth, it is unclear whether there is a relationship between the two and if it is positive or negative.
+
+## 3 Data
+  This analysis used the Add Health Data, a longitudinal study that looks at adolescents' social, economic, and physical characteristics from the years 1994 to 2008. In order to trace the appropriate variables, I used DS1 from Wave I (mainly for demographics) and DS22 from Wave IV (for more specific variables related to health and wellbeing).
+  
+  The explanatory variable was coded as a binary variable, user, from this question: "In the past seven days, how many hours did you spend playing video or computer games, or using a computer? Do not count internet use for work or school," H4DA23, which ranged in values from 0 to 105. If the data value was 0, the respondent was assigned a user value of 0. Otherwise, the respondent was assigned a value of 1. While methods of measuring obesity are frequently contested, BMI is a common metric, as it is relatively inexpensive and non-invasive technique. The outcome variable is Body Mass Index, H4BMI. Sources classify the numeric cutoffs for obesity risks differently, as BMI is influenced by unrelated factors like height and body fat [@aha], so I considered BMI as a continuous variable with answers ranging from 14.40 to 889.00. 
+  
+  The controls were age, sex, race/ethnicity, household income, and diet. For age, I looked at the birth year of the respondent. For sex, I created a binary variable, "female," which was set to either 0 (male) or 1 (female). Dummies were included for hispanic, black, and asian race/ethnicity, with 0 being that the respondent did not identify with the group and 1 being that they did (the reference was set as white). It's important to note that the way the data was set up, respondents were able to identify with multiple races. Income was left as given, with with each unit representing $1000 and a response maximum of 999. To track diet, I looked at this question: "How many times in the past seven days did you eat food from a fast food restaurant, such as McDonald's, Burger King, Wendy's, Arby's, Pizza Hut, Taco Bell, or Kentucky Fried Chicken or a local fast food restaurant," H4GH8, which had a maximum response value of 99.
+  
+ The Add Health dataset had some missing values. To avoid listwise deletion, I did imputation through Amelia for all of the variables. Thirteen of the observations reported BMIs of 888 or 889, which are unrealisticly high and do not fit on the known scale, so I removed and imputed these values as well. The implications of this are further investigated in the Discussion section. The visualizations in Figures 1 and 2 in the Appendix show the difference in missingness before and after imputation; after imputation, there were no more NA values. Additionally, because the data isn't collected through randomized control trials, I matched this observational data, so that covariates are balanced between the treatment and control groupl and can be compared "apples-to-apples" by finding observations that are similar on observed covariates. I matched on year of birth, female, hispanic, white, black, asian, income, and frequency of fast food. Figure 3 below can be used to check for covariate balance and shows it nearly matched for most covariates.
+  
+```{r, echo = FALSE, fig.height = 2.7}
+cobalt::love.plot(imputed_data_matched, title = "Figure 3: Covariate Balance for Matching", abs = TRUE)
+
+```
+  
+  
+  Table 1 below shows summary statistics, filtered by whether or not the repsondent used a computer to watch videos or play comuter games unrelated to work or school, of the data that was matched to correct for imbalance. One important part is the outcome variable, BMI, and its statistics--count, mean (SD), and range--that are included at the top. 
+  
+```{r summary stats, echo = FALSE, warning = FALSE, results = "asis"}
+
+var_names <- list(
+  white    = "White",
+  female   = "Sex",
+  birthyear = "Year of Birth",
+  hispanic = "Hispanic",
+  black = "Black",
+  asian = "Asian",
+  income = "Household Income",
+  fastfood = "Fast Food Frequency"
+)
+
+temp<- health_matched %>% mutate(hispanic = ifelse(hispanic == 1, "Hispanic", "Not Hispanic")) %>% mutate(white = ifelse(white == 1, "White", "Not White")) %>% mutate(black = ifelse(black == 1, "Black", "Not Black")) %>% mutate(asian = ifelse(asian == 1, "Asian", "Not Asian")) %>% mutate(female = ifelse(female == 1, "Female", "Male")) %>% mutate(user = ifelse(user == 1, "User", "Not a User"))
+
+tableby( user ~ BMI + birthyear + female + hispanic + white + black + asian + income + fastfood,
+         numeric.stats = c("N", "meansd", "range"),
+         data = temp,
+         test = FALSE,
+         digits = 2) %>% summary(labelTranslations = var_names, title="Summary Statistics (After Matching)")
+```
+
+## 4 Methods
+In order to analyze the data, I ran OLS regressions of BMI onto whether the respondent used a computer to play games/watch videos or not. OLS is the appropriate model, as opposed to logistic regression, because BMI is a continuous variable. The null hypothesis is that there is no relationship between playing computer games/watching videos and BMI. The data in this survey is observational, but analogizes to a real experiment that has random assignment of gaming/watching videos. The independent variable is manipulable so there is a treatment and control group.
+
+```{r regression, echo = FALSE, warning = FALSE, results = "asis"}
+match <- health_matched
+match$female <- factor(match$female)
+match$hispanic <- factor(match$hispanic)
+match$white <- factor(match$white)
+match$black <- factor(match$black)
+match$asian <- factor(match$asian)
+match$user <- factor(match$user)
+
+df$female <- factor(df$female)
+df$hispanic <- factor(df$hispanic)
+df$white <- factor(df$white)
+df$black <- factor(df$black)
+df$asian <- factor(df$asian)
+df$user <- factor(df$user)
+
+imp$female <- factor(imp$female)
+imp$hispanic <- factor(imp$hispanic)
+imp$white <- factor(imp$white)
+imp$black <- factor(imp$black)
+imp$asian <- factor(imp$asian)
+imp$user <- factor(imp$user)
+
+lm1 <- lm(BMI ~ user, data = match)
+lm3 <- lm(BMI ~ user + female + hispanic + black + asian, data = match)
+lm2 <- lm(BMI ~ user + birthyear + female + hispanic + black + asian + income + fastfood, data = match)
+
+lm1imp <- lm(BMI ~ user, data = imp)
+lm2imp <- lm(BMI ~ user + birthyear + female + hispanic  + black + asian + income + fastfood, data = imp)
+
+lm1df <- lm(BMI ~ user, data = df)
+lm2df <- lm(BMI ~ user + birthyear + female + hispanic  + black + asian + income + fastfood, data = df)
+
+stargazer(lm1, lm3, lm2, type = "latex", 
+          title = "Regression Models",
+          omit.stat = c("f", "ser", "ll", "aic", "adj.rsq"),
+          header = FALSE,
+          column.labels = c("Bivar(MI)", "Demogr(MI)", "Full(MI)", 
+                            "Bivar(I)","Full(I)","Bivar","Full"),
+         covariate.labels = c("User", "Year of Birth", "Female", "Hispanic", "Black", "Asian", "Income",                        "Fast Food Frequency"),
+         font.size = "small",
+         single.row = TRUE
+          )
+```
+
+Table 3 in the Appendix displays seven different models (the first three are included in the Table 3 below). The first three (Models 1, 2, and 3) are after imputing and matching, the next two (Models 4 and 5) are after imputing (no matching), and the final two (Models 6 and 7) are on the original data (no imputing, no matching), as I wanted to see if the modifications may have affected the significance of any regressors. Models 1, 4, and 6 are bivariate regressing BMI on computer game/video watching status. Model 2 included the same explanatory variable and also controlled for some demographics, namely gender and race. Models 3, 5, and 7 regresses BMI on the main explanatory variable along with a full set of controls. 
+
+There were shifts in the coefficients between the models on the imputed and unimputed data, suggesting that the missingness is systematic. In theory, imputing the model helps get rid off these biases present in the original data. A similar shift in coefficients was present between the models on matched and unmatched data. Matching the data helps better isolate the effect of the treatment.
+
+The ANOVA tests included in the Appendix are a comparison of Models 1 and 2, Models 2 and 3, and Models 1 and 3, respectively, and these tables reveal which variables have the most explanatory power. The first and second ANOVA tests in Tables 4 and 5 demonstrate that the addition of gender and race/ethnicity explains more than the addition of the other controls (year of birth, income, fast food frequency), but the third ANOVA in Table 6 reveals that the addition of all seven control is stastically significant (p<0.001). The table of linear regressions shows that the significance of the predictors does vary slightly depending on which version of the data you use, so the following results will be based on the imputed and matched data. Therefore, I favored Model 3: a linear model where BMI is a function of "user" status and a full set of controls on data that has been imputed and matched, as represented by the equation below.
+
+**Equation:**
+$$
+BMI = \hat{\beta_0} + \hat{\beta_1} \times user + \hat{\beta_2} \times birthyear + \hat{\beta_3} \times female + \hat{\beta_4} \times hispanic + \hat{\beta_5} \times black + \hat{\beta_6} \times asian + \hat{\beta_6} \times income +  \hat{\beta_7}\times fastfood+ \epsilon
+$$
+
+There are many assumptions when running OLS. The dependent variable must be linear in parameters, as demonstrated by the linear relationships in the equation above. There is perfect collinearity between the regressors, and the observations must have random sampling. It is also assumed that the error term has an expected value and mean of zero and that they are uncorrrelated with all of the regressors, so that the error term is responsible for picking up any variation that is not otherwise accounted for. 
+
+## 5 Results
+Because of matching, the coefficients across Models 1, 2, and 3 are similar for the attributes that are present in each model. All of the OLS regressions found whether the respondents plays computer games/watches videos to be statistically significant (p<0.01). Model 3, which has a full set of controls (Year of Birth, Gender, Race/Ethnicity, Income, and Fast Food Frequency) found that, holding all else constant, moving from "Not User" (control) to "User" (treatment) was associated with a 0.805 unit increase in BMI, with a standard deviation of 0.235, as represented in Figure 4 below. There is very little overlap between the 95% Confidence Intervals, suggesting that the intercept shift is very significant. The evidence is strong enough to reject the null hypothesis (p<0.01).
+
+```{r plot model 3, echo = FALSE, warning = FALSE, fig.height = 3}
+match_modified <- match %>% mutate(user = ifelse(user == 1, "Yes", "No")) %>% mutate(asian = ifelse(asian == 1, "Asian", "Not Asian")) %>% mutate(female = ifelse(female == 1, "Female", "Male"))
+
+lm2_modified <- lm(BMI ~ user + birthyear + female + hispanic + black + asian + income + fastfood, data = match_modified)
+
+plot_model(lm2_modified, type = "pred", terms = c("user")) +
+  ggtitle("Figure 4: Predicted BMI for User vs Not User") + 
+  ylab("BMI") +
+  xlab("Respondent Plays Computer Games/Watches Videos")
+```
+
+Many of the controls were statistically significant in Model 3. Asian race had the largest impact on the outcome variable in terms of magnitude on the outcome variable. Asians on average displayed a BMI 2.05 units lower than Whites, which is significant (p<0.01). Figure 5 in the Appendix displays a plot similar to before that again predicts BMI but considers Asian race. With the addition of just one control, the significance of the explanatory variable becomes more clear visually, as the 95% Confidence Intervals are even farther apart. The other binary variables for race represente significant intercept shifts as well: Blacks were 1.717 BMI unis higher (p<0.01) and Hispanics were 0.963 BMI units higher (p<0.05). Aside from these demographics, another important constant to note household income, with a thousand dollar increase in household income being associated with a 0.0016 decrease in BMI, which is significant (p<0.001). For all the constants, similar correlations are seen in the other models based off of the imputed (not matched) and original (not imputed, not matched) datasets, although the female indicator variable increases in significance after we modify the datasets and the hispanic indicator varies a little across the models.
+
+The correlation between Fast Food Frequency and BMI was insignificant and varied between a positive and negative relationship depending on the dataset that was used, suggesting that it is not an important attribute. While this control was not significant on its own, it was still included in the model to soak up variation that may impact the relationship between the main explanatory variable and the dependent variable.
+
+It is important to remember that these results only apply to a specific year (2008, when the data was collected) and population, (Americans who were in grades 7-12 during the 1994-95 school year, like in the study). These results have a limited scope of inference because distributions like BMI, diet, behavior, etc. of the population can change over the years, so it is possile that varying factors like location or time could yield different results than this study.
+
+## 6 Discussion
+First, using BMI as a measure of obesity is contested in the medical world, as it doesn't account for factors like height, body type, and body fat well. As seen in this report and in research studies, BMI is largely correlated with race and gender, which presents an opportunity for future improvements in data analysis, as I did not consider mixed race status or what percentage of the respondent was of each race due for simplicity's sake and due to a lack of available information. Additionally, weight is a health issue affected by a variety of social determinants of health, and while this report considers some controls, there are many other confounding variables including living situation, physical activity, sugar intake, etc. that could be biasing the results. A more thorough analysis would account for many other controls. While I tried to model random assignment through matching, the process was not perfect, as not all cofounders could be controlled, presenting a similar problem for the analysis. Finally, the main explanatory variable looked at time spent on the computer watching videos or playing computer games, which does not include many types of screen media nor distinguish between the two included. Further analysis should include different and more categories in order to more accurately pinpoint potential effects on obesity. 
+
+Regarding the models, in order to design an experiment with "control" and "treatment" groups and run a simple matching process, I turned the main explanatory variable into a binary one. This could potentially have been a source of error, so I tested similar regressions on a model with a continuous main explanatory variable, indicating the number hours spent on the computer playing games or watching videos, and the statistical significance for the variables was relatively similar. The full model based on imputed data (not matched) is included in the Appendix in Table 7. Additionally, there were a few entries with unreasonably high BMIs that I removed and imputed, and this drastically changed the results. Table 8 in the Appendix presents a model with full controls on imputed data that includes the unreasonably high numbers for comparison. This is important to note, because while I am sure the reported BMIs in the 800s are not possible, I do not know what actual values are, and the integrity of the data is lost with deletion.
+
+The data allows me to make conclusions about the correlation between the variables for the average American adult between the ages included in the survey (those in grades 7-12 during the 1994-95 school year). Screen media and population social habits are constantly evolving, so the years included in this study are important to note. Location is important as well, because social, physical, and dietary habits vary drastically not only within the country but internationally as well. Due to these limnitations and the nature of observational data, the results should be taken as an extrapolation of the relationship between the main explanatory and outcome variables, not a causal claim. 
+
+
+## 7 Conclusion
+From the ANOVA tests and summaries, I found that among the variety of linear models tested on imputed and matched data, the one containing full controls had the most explanatory power. Based on this model, as displayed in Table 2, moving from "Not User" (control) to "User" (treatment) was associated with a 0.805 unit increase in BMI if all else is held constant, where a "User" is a respondent who spends time on the computer playing games or watching videos unrelated to school or work; this result is significant (p<0.01). The largest regressor controls in terms of magnitude were asian race (p<0.01) and black race (p<0.1). Gender, birth year, and income were extremely significant as well.
+
+In conclusion, this analysis suggests that increased screen time, particularly on a computer for computer games or watching videos unrelated to school or work, is associated with increased BMI, which was used as a measure of obesity, when controlling for other variables. This rejects the claim that increased access to screen media is uncorrelated with obesity, as Vandewater suggests, but her statistical analysis that reveals that screen time does not impact time spent engaging in intense, outdoor activity, was not investigated in this study. The results of this study do weaken Robinson's claim that increased access to screen media causes a decrease in obesity rates due to improved access to information regarding fitness and extra motivation online, as this did not prove to be the case at a population level. Calvert's reasoning is ultimately the one that is supported as he claims that increased screen time is associated with increased rates of obesity, but the exact reason behind this relationship remains unconfirmed. These results are important in health policy, as experts need to figure out what factors are most important for controlling obesity rates. Based on these results, limiting computer games and videos may be a directly effective solution. Targeting and controlling for other socioeconomic factors, like household income and race, may prove to be important as well for widely improving public health.
+
+\newpage
+
+## Appendix
+```{r not missing, fig.hold='hold', out.width="50%"}
+gg_miss_var(df) + ggtitle("Figure 1: Missing Values Before Imputation")
+gg_miss_var(imp) + ggtitle("Figure 2: Missing Values After Imputation")
+```
+
+```{r regression table full appendix, echo = FALSE, warning = FALSE, results = "asis"}
+stargazer(lm1, lm3, lm2, lm1imp, lm2imp, lm1df, lm2df, type = "latex", 
+          title = "Regression Models",
+          omit.stat = c("f", "ser", "ll", "aic", "adj.rsq"),
+          header = FALSE,
+          column.labels = c("Bivar(MI)", "Demogr(MI)", "Full(MI)", 
+                            "Bivar(I)","Full(I)","Bivar","Full"),
+         covariate.labels = c("User", "Year of Birth", "Female", "Hispanic", "Black", "Asian", "Income",                        "Fast Food Frequency"),
+          column.sep.width = "-10pt"
+          )
+
+```
+
+
+
+```{r anova, echo = FALSE, warning = FALSE, results = "asis"}
+
+options(xtable.comment = FALSE)
+
+anova(lm1, lm3)  %>% 
+  xtable(caption = 'ANOVA 1 on Model 1 (Naive) vs. Model 2 (Deomgraphic Predictors)', digits = 10) %>% 
+  print(type = 'latex')
+
+anova(lm3, lm2, test = "Chisq")  %>% 
+  xtable(caption = 'ANOVA 2 on Model 2 (Demographic Predictors) vs. Model 3 (Full)', digits = 10) %>%
+  print(type = 'latex')
+
+anova(lm1, lm2, test = "Chisq")  %>% 
+  xtable(caption = 'ANOVA 3 on Model 1 (Naive) vs. Model 3 (Full)', digits = 10) %>%
+  print(type = 'latex')
+```
+
+```{r, fig.height = 5}
+plot_model(lm2_modified, type = "pred", terms = c("user", "asian")) +
+  ggtitle("Figure 5: Predicted BMI Based on User vs Not User Including Asian Race") + 
+  ylab("BMI") + 
+  xlab("Respondent Plays Computer Games/Watches Videos")
+```
+
+
+```{r continuous regression,  echo = FALSE, warning = FALSE, include=FALSE }
+df <- health1 %>% rename(
+  birthyear = H1GI1Y,
+  female = BIO_SEX,
+  hispanic = H1GI4,
+  white = H1GI6A,
+  black = H1GI6B, 
+  asian = H1GI6D,
+  income = PA55,
+  fastfood = H4GH8,
+  hours = H4DA23,
+  BMI = H4BMI
+)
+
+df2 <- df %>% 
+  mutate(
+    # binary
+    female = case_when(female == "(2) (2) Female" ~ 1, female == "(1) (1) Male" ~ 0),
+    hispanic = case_when(hispanic == "(1) (1) Yes" ~ 1, hispanic == "(0) (0) No" ~ 0),
+    white = case_when(white == "(1) (1) Marked" ~ 1, white == "(0) (0) Not marked" ~ 0),
+    asian = case_when(
+      asian == "(1) (1) Marked (If Asian/Pacific Islander among R's answer ask Q" ~ 1, 
+      asian == "(0) (0) Not marked (skip to Q.8)" ~ 0),
+    black = case_when(black == "(1) (1) Marked" ~ 1, black == "(0) (0) Not marked" ~ 0),
+  )
+
+df2 <- separate(df2, birthyear, c("na", "na2", "na3", "birthyear"))
+df2 <- df2 %>% select(birthyear, female, hispanic, white, black, asian, income, fastfood, hours, BMI)
+df2$birthyear <- as.numeric(df2$birthyear)
+
+indices <- which(df2$BMI == 889 | df2$BMI == 888)
+df2$BMI[indices] <- NA
+
+set.seed(12345)
+df2 <- data.frame(df2)
+
+bounds_matrix <- matrix(    # tell amelia to bound some vars
+    ncol  = 3,              # 1st col = variable #, 2nd = min, 3rd = max
+    byrow = TRUE,
+    data  = c(1, 1974, 1983, # birthyear
+              2, 0, 1,   # female
+              3, 0, 1,   # hispanic
+              4, 0, 1,   # white
+              5, 0, 1,   # black
+              6, 0, 1,   # asian
+              7, 0, 999, # income
+              8, 0, 99,  # fastfood
+              9, 0, 100,  # hours
+              10, 14.40, 70.30 # BMI
+            )
+)
+
+imp2 <- amelia(
+  x = df2,                
+  m = 1,                          
+  noms = c("female", "hispanic", "white", "black", "asian"),
+  ords = c("income", "birthyear", "fastfood", "hours"),
+  bounds = bounds_matrix  
+  )
+
+imp2 <- imp2$imputations$imp1
+
+lm_cont <- lm(BMI ~ hours + birthyear + female + hispanic  + black + asian + income + fastfood, data = imp2)
+```
+
+```{r, results = 'asis'}
+
+stargazer(lm_cont, type = "latex", 
+          title = "Regression Model Based on Continuous Explanatory Variable (Imputed)",
+          omit.stat = c("f", "ser", "ll", "aic", "adj.rsq"),
+          header = FALSE,
+          column.labels = c("Full(I)"),
+         covariate.labels = c("User", "Year of Birth", "Female", "Hispanic", "Black", "Asian", "Income",                        "Fast Food Frequency")
+          )
+
+```
+
+
+```{r regression bad columns, echo = FALSE, warning = FALSE, include = FALSE}
+df <- health1 %>% rename(
+  birthyear = H1GI1Y,
+  female = BIO_SEX,
+  hispanic = H1GI4,
+  white = H1GI6A,
+  black = H1GI6B, 
+  asian = H1GI6D,
+  income = PA55,
+  fastfood = H4GH8,
+  user = H4DA23,
+  BMI = H4BMI
+)
+
+df <- df %>% 
+  mutate(
+    # binary
+    female = case_when(female == "(2) (2) Female" ~ 1, female == "(1) (1) Male" ~ 0),
+    hispanic = case_when(hispanic == "(1) (1) Yes" ~ 1, hispanic == "(0) (0) No" ~ 0),
+    white = case_when(white == "(1) (1) Marked" ~ 1, white == "(0) (0) Not marked" ~ 0),
+    asian = case_when(
+      asian == "(1) (1) Marked (If Asian/Pacific Islander among R's answer ask Q" ~ 1, 
+      asian == "(0) (0) Not marked (skip to Q.8)" ~ 0),
+    black = case_when(black == "(1) (1) Marked" ~ 1, black == "(0) (0) Not marked" ~ 0),
+    user = case_when(user == 0 ~ 0, user !=0 ~ 1)
+  )
+
+df <- separate(df, birthyear, c("na", "na2", "na3", "birthyear"))
+df <- df %>% select(birthyear, female, hispanic, white, black, asian, income, fastfood, user, BMI)
+df$birthyear <- as.numeric(df$birthyear)
+
+set.seed(12345)
+df <- data.frame(df)
+
+bounds_matrix <- matrix(    # tell amelia to bound some vars
+    ncol  = 3,              # 1st col = variable #, 2nd = min, 3rd = max
+    byrow = TRUE,
+    data  = c(1, 1974, 1983, # birthyear
+              2, 0, 1,   # female
+              3, 0, 1,   # hispanic
+              4, 0, 1,   # white
+              5, 0, 1,   # black
+              6, 0, 1,   # asian
+              7, 0, 999, # income
+              8, 0, 99,  # fastfood
+              9, 0, 1,  # user
+              10, 14.40, 889 # BMI
+            )
+)
+
+imp <- amelia(
+  x = df,                
+  m = 1,                          
+  noms = c("female", "hispanic", "white", "black", "asian"),
+  ords = c("income", "birthyear", "fastfood", "user"),
+  bounds = bounds_matrix  
+  )
+
+imp <- imp$imputations$imp1
+
+lm_bad <- lm(BMI ~ user + birthyear + female + hispanic  + black + asian + income + fastfood, data = imp)
+
+```
+
+```{r, results = 'asis'}
+
+stargazer(lm_bad, type = "latex", 
+          title = "Regression Model Including Incorrect BMI Values",
+          omit.stat = c("f", "ser", "ll", "aic", "adj.rsq"),
+          header = FALSE,
+          column.labels = c("Full(I)"),
+         covariate.labels = c("User", "Year of Birth", "Female", "Hispanic", "Black", "Asian", "Income",                        "Fast Food Frequency")
+          )
+```
+
+
+\clearpage
+## 8 Bibliography
+
+
+
+
+
